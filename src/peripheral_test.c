@@ -55,12 +55,16 @@ int main(int argc, char **argv) {
   GPIOA->PUE = 0x0;
   GPIOA->DS = 0xFFFE;
 
+  HAL_I2C_init(I2C0, NULL);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1) {
+    I2C0->DATA = (counter << 1U) | I2C_DATA_WRITE;
+    I2C0->STAT_CMD = I2C_STAT_CMD_WR_MSK | I2C_STAT_CMD_RXACK_STA_MSK;
+
     GPIOA->OUTPUT_VAL = counter;
     counter ++;
     /* USER CODE END WHILE */
