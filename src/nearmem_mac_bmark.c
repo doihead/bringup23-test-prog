@@ -15,15 +15,12 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "utils.h"
 
 #define CACHELINE         64
-#define REGION_SIZE_LINES 16 
-#define STRIDE (4 * CACHELINE)
+#define REGION_SIZE_LINES 32
+#define STRIDE (CACHELINE)
 
-__attribute__((aligned(CACHELINE))) int8_t mem1[REGION_SIZE_LINES][CACHELINE / sizeof(int8_t)];
-
-__attribute__((aligned(CACHELINE))) int8_t mem2[REGION_SIZE_LINES][CACHELINE / sizeof(int8_t)];
+__attribute__((aligned(CACHELINE*4))) int8_t mem1[REGION_SIZE_LINES][CACHELINE / sizeof(int8_t)];
 
 int16_t saturate(int32_t x) {
     int16_t max = (1 << 15) - 1;
@@ -64,36 +61,18 @@ int main(int argc, char **argv) {
   /* Initialize all configured peripherals */
   /* USER CODE BEGIN 2 */
 
-  // set up GPIO registers
-  // GPIO_InitTypeDef GPIO_init_config;
-  // GPIO_init_config.mode = GPIO_MODE_OUTPUT;
-  // GPIO_init_config.pull = GPIO_PULL_NONE;
-  // GPIO_init_config.drive_strength = GPIO_DS_STRONG;
-  // HAL_GPIO_init(GPIOA, &GPIO_init_config, GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3);
-
   // set up UART registers
-  // UART_InitTypeDef UART_init_config;
-  // UART_init_config.baudrate = 115200;
-  // UART_init_config.mode = UART_MODE_TX_RX;
-  // UART_init_config.stopbits = UART_STOPBITS_2;
-  // HAL_UART_init(UART0, &UART_init_config);
+  UART_InitTypeDef UART_init_config;
+  UART_init_config.baudrate = 115200;
+  UART_init_config.mode = UART_MODE_TX_RX;
+  UART_init_config.stopbits = UART_STOPBITS_2;
+  HAL_UART_init(UART0, &UART_init_config);
   
-  CLEAR_BITS(UART0->RXCTRL, UART_RXCTRL_RXEN_MSK);
-  CLEAR_BITS(UART0->TXCTRL, UART_TXCTRL_TXEN_MSK);
-
-  SET_BITS(UART0->RXCTRL, UART_RXCTRL_RXEN_MSK);
-  SET_BITS(UART0->TXCTRL, UART_TXCTRL_TXEN_MSK);
-
-  CLEAR_BITS(UART0->TXCTRL, UART_TXCTRL_NSTOP_MSK);
-  CLEAR_BITS(UART0->TXCTRL, UART_STOPBITS_2);
 
   // baudrate setting
   // f_baud = f_sys / (div + 1)
   // UART0->DIV = (SYS_CLK_FREQ / 115200) - 1;
-  LL_UART_transmit(UART0, str, 64, 0);
-  printnum(0);
-  printnum(-84);
-  putstr("Initializing memory");
+  puts("Initializing memory");
   for (size_t i = 0; i < REGION_SIZE_LINES; i++) {
       for (size_t j = 0; j < CACHELINE/sizeof(int8_t); j++) {
           mem1[i][j] = i + j;
@@ -109,7 +88,13 @@ int main(int argc, char **argv) {
 
   _Static_assert(STRIDE % CACHELINE == 0, "stride not aligned");
   uint32_t count = REGION_SIZE_LINES / (STRIDE / CACHELINE);
+
   int16_t expected[32];
+  uint64_t start_time;
+  uint64_t end_time;
+
+  start_time = CLINT->MTIME;
+
   for (size_t i = 0; i < count; i++) {
       int sum = 0;
       for (size_t j = 0; j < sizeof(operandReg)/sizeof(uint8_t); j++) {
@@ -117,24 +102,37 @@ int main(int argc, char **argv) {
       }
       expected[i] = saturate(sum);
   }
- 
+  end_time = CLINT->MTIME;
+
+  printf("Naive took: %lu cycles\r\n", end_time-start_time);
+
   void* src_addr = mem1;
   int16_t result[32];
 
   uint64_t stride = STRIDE;
 
-  putstr("Performing DMA");
+  puts("Performing MAC");
+  start_time = CLINT->MTIME;
 
-  HAL_DMA_init_MAC(DMA0, src_addr, operandReg, stride, count);
+  // HAL_DMA_init_MAC(DMA0, src_addr, operandReg, stride, count);
+
+  HAL_DMA_init_MAC(DMA0, src_addr, operandReg, stride*4, count/4);
+  HAL_DMA_init_MAC(DMA1, src_addr +   CACHELINE, operandReg, stride*4, count/4);
+  HAL_DMA_init_MAC(DMA2, src_addr + 2*CACHELINE, operandReg, stride*4, count/4);
+  HAL_DMA_init_MAC(DMA3, src_addr + 3*CACHELINE, operandReg, stride*4, count/4);
+
   // wait for peripheral to complete
-  HAL_DMA_get_MAC_result(DMA0, result, 32);
+  HAL_DMA_get_MAC_result(DMA0, result, count/4);
+  HAL_DMA_get_MAC_result(DMA1, result + 8, count/4);
+  HAL_DMA_get_MAC_result(DMA2, result + 16, count/4);
+  HAL_DMA_get_MAC_result(DMA3, result + 24, count/4);
+
+  end_time = CLINT->MTIME;
+  printf("DMA took: %lu cycles\r\n", end_time-start_time);
 
   for (size_t i = 0; i < count; i++) {
       if (expected[i] != result[i]) {
-          putstr("Expected: ");
-          printnum(expected[i]);
-          putstr("But got: ");
-          printnum(result[i]);
+          printf("Expected: %lu but got %lu\r\n", expected[i], result[i]);
       }
   }
   // printf("Dumping...\n");
@@ -144,7 +142,7 @@ int main(int argc, char **argv) {
   // }
   
 
-  putstr("Test complete");
+  puts("Test complete");
 
   /* USER CODE END 2 */
 
@@ -169,6 +167,3 @@ void __attribute__((weak, noreturn)) __main(void) {
    asm volatile ("wfi");
   }
 }
-
-
-
